@@ -1,18 +1,23 @@
 package com.hussen9004.keyboard
 
+import android.content.BroadcastReceiver
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputContentInfo
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Toast
@@ -21,6 +26,15 @@ class KeyboardService : InputMethodService() {
     private var isArabic = true
     private var isShifted = false
     private var showNumbers = false
+    private var imageTargetConnection: InputConnection? = null
+    private var imageTargetEditorInfo: EditorInfo? = null
+
+    private val imagePickedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val uri = intent.getStringExtra(EXTRA_IMAGE_URI)?.let(Uri::parse) ?: return
+            insertGalleryImage(uri)
+        }
+    }
 
     private val arabicRows = listOf(
         listOf("ض", "ص", "ث", "ق", "ف", "غ", "ع", "ه", "خ", "ح", "ج", "د"),
@@ -38,6 +52,22 @@ class KeyboardService : InputMethodService() {
         listOf("*", "\"", "'", ":", ";", "!", "?", "=")
     )
 
+    override fun onCreate() {
+        super.onCreate()
+        val filter = IntentFilter(ACTION_IMAGE_PICKED)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(imagePickedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(imagePickedReceiver, filter)
+        }
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(imagePickedReceiver)
+        super.onDestroy()
+    }
+
     override fun onCreateInputView(): View = buildKeyboard()
 
     private fun buildKeyboard(): View {
@@ -46,8 +76,9 @@ class KeyboardService : InputMethodService() {
             setPadding(dp(4), dp(4), dp(4), dp(6))
             setBackgroundColor(Color.rgb(232, 230, 237))
         }
-        addKeyRow(keyboard, listOf("📋 الحافظة", "▶ YouTube", "🌐 ويب")) { key ->
+        addKeyRow(keyboard, listOf("🖼 ملصق", "📋 الحافظة", "▶ YouTube", "🌐 ويب")) { key ->
             when (key) {
+                "🖼 ملصق" -> openGallery()
                 "📋 الحافظة" -> pasteFromClipboard()
                 "▶ YouTube" -> openUrl("https://www.youtube.com")
                 "🌐 ويب" -> openUrl("https://www.google.com")
@@ -81,10 +112,16 @@ class KeyboardService : InputMethodService() {
     private fun addKeyRow(parent: LinearLayout, labels: List<String>, onPress: (String) -> Unit) {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         labels.forEach { label ->
-            val special = label in setOf("⇧", "⌫", "?123", "ABC", "🌐", "↵", "📋 الحافظة", "▶ YouTube", "🌐 ويب")
+            val toolbar = label in setOf("🖼 ملصق", "📋 الحافظة", "▶ YouTube", "🌐 ويب")
+            val special = label in setOf("⇧", "⌫", "?123", "ABC", "🌐", "↵") || toolbar
             val button = Button(this).apply {
                 text = label
-                textSize = when (label) { "مسافة" -> 12f; "🌐" -> 18f; "📋 الحافظة", "▶ YouTube", "🌐 ويب" -> 11f; else -> 17f }
+                textSize = when (label) {
+                    "مسافة" -> 12f
+                    "🌐" -> 18f
+                    "🖼 ملصق", "📋 الحافظة", "▶ YouTube", "🌐 ويب" -> 10f
+                    else -> 17f
+                }
                 isAllCaps = false
                 minWidth = 0
                 minimumWidth = 0
@@ -99,16 +136,79 @@ class KeyboardService : InputMethodService() {
             }
             val weight = when (label) {
                 "مسافة" -> 2.8f
-                "📋 الحافظة", "▶ YouTube", "🌐 ويب" -> 1.6f
+                "🖼 ملصق", "📋 الحافظة", "▶ YouTube", "🌐 ويب" -> 1.4f
                 "⇧", "⌫", "?123", "ABC", "🌐", "↵" -> 1.35f
                 else -> 1f
             }
-            val height = if (label in setOf("📋 الحافظة", "▶ YouTube", "🌐 ويب")) 40 else 46
+            val height = if (toolbar) 40 else 46
             row.addView(button, LinearLayout.LayoutParams(0, dp(height), weight).apply {
                 setMargins(dp(2), dp(2), dp(2), dp(2))
             })
         }
         parent.addView(row, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    private fun openGallery() {
+        if (currentInputConnection == null) {
+            Toast.makeText(this, "افتح حقل كتابة أولاً", Toast.LENGTH_SHORT).show()
+            return
+        }
+        imageTargetConnection = currentInputConnection
+        imageTargetEditorInfo = currentInputEditorInfo
+        try {
+            startActivity(Intent(this, ImagePickerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            imageTargetConnection = null
+            imageTargetEditorInfo = null
+            Toast.makeText(this, "تعذر فتح الاستديو", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun insertGalleryImage(uri: Uri) {
+        val connection = imageTargetConnection ?: currentInputConnection
+        val editorInfo = imageTargetEditorInfo ?: currentInputEditorInfo
+        imageTargetConnection = null
+        imageTargetEditorInfo = null
+        if (connection == null || editorInfo == null) {
+            Toast.makeText(this, "ارجع إلى حقل الكتابة ثم اختر الصورة مرة أخرى", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (isPasswordField(editorInfo)) {
+            Toast.makeText(this, "لا يمكن إدراج صورة في حقل كلمة المرور", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= 25) {
+            val mimeType = contentResolver.getType(uri) ?: "image/*"
+            val supportedTypes = editorInfo.contentMimeTypes.orEmpty()
+            val supported = supportedTypes.any { ClipDescription.compareMimeTypes(mimeType, it) }
+            if (supported) {
+                val description = ClipDescription("ملصق", arrayOf(mimeType))
+                val content = InputContentInfo(uri, description, null)
+                val committed = try {
+                    connection.commitContent(content, InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, Bundle())
+                } catch (_: Exception) {
+                    false
+                }
+                if (committed) return
+            }
+        }
+        shareGalleryImage(uri)
+    }
+
+    private fun shareGalleryImage(uri: Uri) {
+        Toast.makeText(this, "التطبيق الحالي لا يدعم إدراج الصور من لوحة المفاتيح؛ يمكنك مشاركتها يدويًا", Toast.LENGTH_LONG).show()
+        try {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = contentResolver.getType(uri) ?: "image/*"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = android.content.ClipData.newUri(contentResolver, "ملصق", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(send, "مشاركة الصورة").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            Toast.makeText(this, "تعذرت مشاركة الصورة", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun commitKey(key: String) {
@@ -150,8 +250,7 @@ class KeyboardService : InputMethodService() {
             return
         }
         val clip = clipboard.primaryClip ?: return
-        val item = clip.getItemAt(0)
-        val text = item.coerceToText(this)
+        val text = clip.getItemAt(0).coerceToText(this)
         if (text.isNullOrEmpty()) {
             Toast.makeText(this, "لا يوجد نص في عنصر الحافظة الحالي", Toast.LENGTH_SHORT).show()
             return
@@ -161,8 +260,7 @@ class KeyboardService : InputMethodService() {
 
     private fun openUrl(url: String) {
         try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         } catch (_: Exception) {
             Toast.makeText(this, "تعذر فتح الرابط", Toast.LENGTH_SHORT).show()
         }
@@ -197,6 +295,11 @@ class KeyboardService : InputMethodService() {
     private val corrections = mapOf(
         "teh" to "the", "adn" to "and", "dont" to "don't", "cant" to "can't",
         "wont" to "won't", "im" to "I'm", "i" to "I", "thier" to "their",
-        " recieve" to " receive", "الذيي" to "الذي", "هاذا" to "هذا", "لاكن" to "لكن"
+        "recieve" to "receive", "الذيي" to "الذي", "هاذا" to "هذا", "لاكن" to "لكن"
     )
+
+    companion object {
+        const val ACTION_IMAGE_PICKED = "com.hussen9004.keyboard.ACTION_IMAGE_PICKED"
+        const val EXTRA_IMAGE_URI = "com.hussen9004.keyboard.EXTRA_IMAGE_URI"
+    }
 }
